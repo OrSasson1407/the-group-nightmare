@@ -1,9 +1,10 @@
-﻿import express from 'express';
+import express from 'express';
 import { createServer } from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { setupSocketGateway } from './gateway/socket.js';
 import { apiRouter } from './api/routes.js';
+import { supabase } from './db/supabase.js';
 
 dotenv.config();
 
@@ -19,28 +20,32 @@ try {
     credentials: true
   }));
   app.use(express.json());
-
   app.use('/api', apiRouter);
 
-  app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'Engine Active', timestamp: new Date().toISOString() });
+  // Fix: health endpoint checks real DB connectivity
+  app.get('/health', async (req, res) => {
+    let dbStatus = 'ok';
+    try {
+      const { error } = await supabase.from('rooms').select('id').limit(1);
+      if (error) dbStatus = 'degraded';
+    } catch {
+      dbStatus = 'unreachable';
+    }
+    const status = dbStatus === 'ok' ? 200 : 503;
+    res.status(status).json({
+      status: dbStatus === 'ok' ? 'Engine Active' : 'Degraded',
+      db: dbStatus,
+      timestamp: new Date().toISOString()
+    });
   });
 
   setupSocketGateway(httpServer, CLIENT_ORIGIN);
 
   const PORT = process.env.PORT || 4000;
-
   httpServer.listen(PORT, () => {
-    console.log('🚀 The Group Nightmare Solver Engine running on port ' + PORT);
+    console.log('The Group Nightmare Solver Engine running on port ' + PORT);
   });
 } catch (err) {
-  console.error('=== FATAL STARTUP ERROR ===');
-  console.error(err);
-  if (err instanceof Error) {
-    console.error('Message:', err.message);
-    console.error('Stack:', err.stack);
-  } else {
-    console.error('Thrown non-error object:', JSON.stringify(err, null, 2));
-  }
+  console.error('=== FATAL STARTUP ERROR ===', err);
   process.exit(1);
 }

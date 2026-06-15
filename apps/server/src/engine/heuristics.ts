@@ -9,11 +9,11 @@ export interface DateNode {
 export function getMRVParticipant(constraints: Record<string, IndividualConstraints>) {
   const ps = Object.values(constraints);
   if (!ps.length) return null;
-  return ps.reduce((b, c) =>
-    c.availabilityGrid.filter(d => d.isAvailable).length <
-    b.availabilityGrid.filter(d => d.isAvailable).length
-      ? c
-      : b
+  return ps.reduce((best, curr) =>
+    curr.availabilityGrid.filter(d => d.isAvailable).length <
+    best.availabilityGrid.filter(d => d.isAvailable).length
+      ? curr
+      : best
   );
 }
 
@@ -32,19 +32,17 @@ export function buildDateGraph(constraints: Record<string, IndividualConstraints
     saturationDegree: 0
   }));
 
-  // Compute saturation degree
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
     let s = 0;
     for (let j = 0; j < nodes.length; j++) {
       if (i === j) continue;
       const other = nodes[j]!;
-      // Check if there exists a participant whose availability differs between the two dates
       if (
         ps.some(p => {
-          const a = p.availabilityGrid.find(d => d.dateString === node.dateString)?.isAvailable ?? false;
-          const b = p.availabilityGrid.find(d => d.dateString === other.dateString)?.isAvailable ?? false;
-          return a !== b;
+          const availA = p.availabilityGrid.find(d => d.dateString === node.dateString)?.isAvailable ?? false;
+          const availB = p.availabilityGrid.find(d => d.dateString === other.dateString)?.isAvailable ?? false;
+          return availA !== availB;
         })
       ) {
         s++;
@@ -71,10 +69,15 @@ export function computeGroupBudget(budgets: number[]) {
     return { proposedBudget: 0, satisfiedCount: 0, complianceScore: 0 };
   }
   const min = Math.min(...budgets);
-  const sat = budgets.filter(b => b >= min).length;
+  const satisfiedCount = budgets.filter(x => x >= min).length;
   return {
     proposedBudget: min,
-    satisfiedCount: sat,
-    complianceScore: sat / budgets.length
+    satisfiedCount,
+    complianceScore: budgets.length > 0 ? satisfiedCount / budgets.length : 0
   };
 }
+
+export function isValidDateString(dateString: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateString) && !isNaN(Date.parse(dateString));
+}
+

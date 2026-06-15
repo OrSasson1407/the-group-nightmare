@@ -1,17 +1,12 @@
 ﻿import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 import { fileURLToPath } from 'url';
-import type { PlanningRoomSession, SolverOutput } from '@tgn/shared';
+import type { PlanningRoomSession, SolverOutput, SolverCandidate } from '@tgn/shared';
+import { getMRVParticipant, buildDateGraph, getDSATUROrderedDates, computeGroupBudget } from './heuristics.js';
 
 const currentFileName = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
 
-console.log([FILE LOAD] csp_solver_worker loaded. isMainThread: \);
-
 export async function executeEngineOptimization(roomData: PlanningRoomSession): Promise<SolverOutput> {
-  console.log([ENGINE] executeEngineOptimization called for room: \);
-  console.log([ENGINE] process.env.VITEST: \, process.env.NODE_ENV: \);
-
-  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
-    console.log('[ENGINE] Test environment detected! Bypassing worker creation.');
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') {
     return {
       isOptimal: true,
       topCandidates: [{ targetDate: '2026-08-15', proposedBudget: 2500, satisfiedCount: roomData.participants.length, totalParticipants: roomData.participants.length, complianceScore: 100 }],
@@ -19,54 +14,86 @@ export async function executeEngineOptimization(roomData: PlanningRoomSession): 
     };
   }
 
-  console.log('[ENGINE] Creating real worker thread...');
   return new Promise((resolve) => {
     const worker = new Worker(currentFileName, { 
-      workerData: roomData,
+      workerData: { ...roomData, __isCspWorker: true },
       execArgv: currentFileName.endsWith('.ts') ? ['--import', 'tsx'] : [] 
     });
 
-    console.log('[ENGINE] Worker thread instantiated.');
-
     const hardTimeout = setTimeout(() => {
-      console.log('[ENGINE] Hard timeout 28s reached! Terminating worker.');
       worker.terminate();
       resolve({ isOptimal: false, topCandidates: [], solverDurationMs: 28000 });
     }, 28000);
 
     worker.on('message', (optimalSolution: SolverOutput) => {
-      console.log('[ENGINE] Worker sent message:', optimalSolution);
       clearTimeout(hardTimeout);
       worker.terminate();
       resolve(optimalSolution);
     });
 
-    worker.on('error', (err) => {
-      console.error('[ENGINE] Worker error:', err);
+    worker.on('error', () => {
       clearTimeout(hardTimeout);
       worker.terminate();
       resolve({ isOptimal: false, topCandidates: [], solverDurationMs: 0 });
     });
 
-    worker.on('exit', (code) => {
-      console.log('[ENGINE] Worker exited with code:', code);
+    worker.on('exit', () => {
       clearTimeout(hardTimeout);
       resolve({ isOptimal: false, topCandidates: [], solverDurationMs: 0 });
     });
   });
 }
 
-if (!isMainThread && workerData) {
-  console.log('[WORKER] Inside worker thread execution block. workerData is present.');
+// REAL WORKER LOGIC - Connecting to heuristics.ts
+if (!isMainThread && workerData && typeof workerData === 'object' && '__isCspWorker' in workerData) {
   const roomData = workerData as PlanningRoomSession;
   const startTime = Date.now();
-  setTimeout(() => {
-    console.log('[WORKER] Timeout finished, sending result back via parentPort.');
+  
+  try {
+    const constraints = roomData.constraintsMatrix;
+    const participantsCount = roomData.participants.length;
+    
+    // 1. Build Date Graph & Apply DSATUR for complex node prioritization
+    const dateNodes = buildDateGraph(constraints);
+    const orderedDates = getDSATUROrderedDates(dateNodes);
+    
+    const topCandidates: SolverCandidate[] = [];
+    
+    // 2. Calculate intersections
+    for (const dateStr of orderedDates) {
+      let availableCount = 0;
+      const budgets: number[] = [];
+      
+      for (const p of Object.values(constraints)) {
+        const day = p.availabilityGrid.find(d => d.dateString === dateStr);
+        if (day?.isAvailable) {
+          availableCount++;
+          // MVP: Parse string budget. E2E Homomorphic logic will run on client in V2
+          budgets.push(Number(p.encryptedMaxBudget) || 0);
+        }
+      }
+      
+      if (availableCount > 0) {
+        const budgetStats = computeGroupBudget(budgets);
+        topCandidates.push({
+          targetDate: dateStr,
+          proposedBudget: budgetStats.proposedBudget,
+          satisfiedCount: availableCount,
+          totalParticipants: participantsCount,
+          complianceScore: (availableCount / participantsCount) * 100
+        });
+      }
+    }
+    
+    // 3. Sort by best compliance, then cheapest budget
+    topCandidates.sort((a, b) => b.complianceScore - a.complianceScore || a.proposedBudget - b.proposedBudget);
+    
     parentPort?.postMessage({
-      isOptimal: true,
-      topCandidates: [{ targetDate: '2026-08-15', proposedBudget: 2500, satisfiedCount: roomData.participants?.length || 0, totalParticipants: roomData.participants?.length || 0, complianceScore: 100 }],
+      isOptimal: topCandidates[0]?.complianceScore === 100,
+      topCandidates: topCandidates.slice(0, 3), // Return only Top 3
       solverDurationMs: Date.now() - startTime
     });
-    process.exit(0);
-  }, 1000);
+  } catch (err) {
+    parentPort?.postMessage({ isOptimal: false, topCandidates: [], solverDurationMs: Date.now() - startTime });
+  }
 }

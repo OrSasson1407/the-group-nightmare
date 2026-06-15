@@ -3,32 +3,44 @@ import { createServer } from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { setupSocketGateway } from './gateway/socket.js';
+import { apiRouter } from './api/routes.js';
 
 dotenv.config();
 
-const app = express();
-const httpServer = createServer(app);
+try {
+  const app = express();
+  const httpServer = createServer(app);
 
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+  const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
-// Enforce CORS for the React client
-app.use(cors({
-  origin: CLIENT_ORIGIN,
-  methods: ['GET', 'POST'],
-  credentials: true
-}));
-app.use(express.json());
+  app.use(cors({
+    origin: CLIENT_ORIGIN,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+  }));
+  app.use(express.json());
 
-// Basic health check for Docker/CI environments
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'Engine Active', timestamp: new Date().toISOString() });
-});
+  app.use('/api', apiRouter);
 
-// Initialize real-time WebSockets gateway
-setupSocketGateway(httpServer, CLIENT_ORIGIN);
+  app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'Engine Active', timestamp: new Date().toISOString() });
+  });
 
-const PORT = process.env.PORT || 4000;
+  setupSocketGateway(httpServer, CLIENT_ORIGIN);
 
-httpServer.listen(PORT, () => {
-  console.log(🚀 The Group Nightmare Solver Engine running on port  + PORT);
-});
+  const PORT = process.env.PORT || 4000;
+
+  httpServer.listen(PORT, () => {
+    console.log('🚀 The Group Nightmare Solver Engine running on port ' + PORT);
+  });
+} catch (err) {
+  console.error('=== FATAL STARTUP ERROR ===');
+  console.error(err);
+  if (err instanceof Error) {
+    console.error('Message:', err.message);
+    console.error('Stack:', err.stack);
+  } else {
+    console.error('Thrown non-error object:', JSON.stringify(err, null, 2));
+  }
+  process.exit(1);
+}
